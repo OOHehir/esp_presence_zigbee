@@ -12,15 +12,14 @@
 static const char *TAG = "main";
 
 /* Pin assignments */
-#define LD2410C_TX_PIN  GPIO_NUM_16
-#define LD2410C_RX_PIN  GPIO_NUM_17
+#define LD2410C_TX_PIN  GPIO_NUM_4
+#define LD2410C_RX_PIN  GPIO_NUM_5
 #define VL53L0X_SDA_PIN GPIO_NUM_6
 #define VL53L0X_SCL_PIN GPIO_NUM_7
 
 /* Sensor polling interval */
 #define SENSOR_REPORT_INTERVAL_MS 5000
 
-/* Thread safety: this task is the sole consumer of both sensors — no mutex needed */
 static void sensor_report_task(void *arg)
 {
     while (1) {
@@ -31,7 +30,7 @@ static void sensor_report_task(void *arg)
         esp_err_t vl_err = vl53l0x_read(&vl_data);
 
         if (ld_err == ESP_OK) {
-            ESP_LOGD(TAG, "LD2410C: move=%d still=%d move_e=%u still_e=%u dist=%ucm",
+            ESP_LOGI(TAG, "LD2410C: move=%d still=%d move_e=%u still_e=%u dist=%ucm",
                      ld_data.moving_target, ld_data.stationary_target,
                      ld_data.move_energy, ld_data.static_energy,
                      ld_data.target_distance_cm);
@@ -41,7 +40,7 @@ static void sensor_report_task(void *arg)
         }
 
         if (vl_err == ESP_OK) {
-            ESP_LOGD(TAG, "VL53L0X: range=%umm status=%u",
+            ESP_LOGI(TAG, "VL53L0X: range=%umm status=%u",
                      vl_data.range_mm, vl_data.status);
             zigbee_node_update_vl53l0x(&vl_data);
         } else {
@@ -83,9 +82,7 @@ void app_main(void)
         esp_restart();
     }
 
-    /* 5. Start sensor reporting task */
-    xTaskCreate(sensor_report_task, "sensor_report", 4096, NULL, 5, NULL);
-
-    /* 6. Start Zigbee main loop — does not return */
-    zigbee_node_start();
+    /* 5. Start Zigbee main loop — does not return.
+     * Sensor task is started from zigbee signal handler once network is up. */
+    zigbee_node_start(sensor_report_task);
 }

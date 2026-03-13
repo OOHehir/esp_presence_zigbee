@@ -1,6 +1,8 @@
 #pragma once
 
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "ld2410c.h"
 #include "vl53l0x.h"
 
@@ -13,8 +15,9 @@ esp_err_t zigbee_node_init(void);
 /**
  * Start the Zigbee main loop. This function does not return.
  * Handles network joining, commissioning, and stack events.
+ * @param sensor_task_fn  Task function to launch once Zigbee stack is ready.
  */
-void zigbee_node_start(void);
+void zigbee_node_start(TaskFunction_t sensor_task_fn);
 
 /**
  * Update LD2410C sensor data on the Zigbee endpoint.
