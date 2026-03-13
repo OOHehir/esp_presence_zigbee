@@ -99,6 +99,182 @@ esp_err_t ld2410c_parse_frame(const uint8_t *buf, size_t len, ld2410c_data_t *ou
     return ESP_OK;
 }
 
+/* --- Command protocol --- */
+
+static const uint8_t CMD_HEADER[] = {0xFD, 0xFC, 0xFB, 0xFA};
+static const uint8_t CMD_FOOTER[] = {0x04, 0x03, 0x02, 0x01};
+#define CMD_HEADER_LEN 4
+#define CMD_FOOTER_LEN 4
+#define CMD_MIN_ACK_LEN 10  /* header(4) + len(2) + cmd(2) + status(2) + footer(4) = 14, but min usable is 10 */
+#define CMD_ACK_TIMEOUT_MS 2000
+
+size_t ld2410c_build_cmd(uint8_t *buf, uint16_t cmd,
+                         const uint8_t *payload, size_t payload_len)
+{
+    size_t i = 0;
+    /* Header */
+    buf[i++] = 0xFD; buf[i++] = 0xFC; buf[i++] = 0xFB; buf[i++] = 0xFA;
+    /* Length = 2 (cmd) + payload */
+    uint16_t len = 2 + payload_len;
+    buf[i++] = len & 0xFF;
+    buf[i++] = (len >> 8) & 0xFF;
+    /* Command (little-endian) */
+    buf[i++] = cmd & 0xFF;
+    buf[i++] = (cmd >> 8) & 0xFF;
+    /* Payload */
+    if (payload && payload_len > 0) {
+        memcpy(buf + i, payload, payload_len);
+        i += payload_len;
+    }
+    /* Footer */
+    buf[i++] = 0x04; buf[i++] = 0x03; buf[i++] = 0x02; buf[i++] = 0x01;
+    return i;
+}
+
+esp_err_t ld2410c_parse_ack(const uint8_t *buf, size_t len, uint16_t cmd)
+{
+    if (!buf || len < 10) return ESP_ERR_INVALID_ARG;
+
+    /* Validate header */
+    if (memcmp(buf, CMD_HEADER, CMD_HEADER_LEN) != 0) return ESP_ERR_INVALID_ARG;
+
+    /* Validate footer */
+    if (memcmp(buf + len - CMD_FOOTER_LEN, CMD_FOOTER, CMD_FOOTER_LEN) != 0)
+        return ESP_ERR_INVALID_ARG;
+
+    /* ACK echoes command with bit 8 set: response cmd = cmd | 0x0100 */
+    uint16_t ack_cmd = buf[6] | (buf[7] << 8);
+    if (ack_cmd != (cmd | 0x0100)) return ESP_ERR_INVALID_RESPONSE;
+
+    /* Status: 0x0000 = success */
+    uint16_t status = buf[8] | (buf[9] << 8);
+    if (status != 0) return ESP_FAIL;
+
+    return ESP_OK;
+}
+
+/* Send command and wait for ACK */
+static esp_err_t ld2410c_send_cmd(uint16_t cmd, const uint8_t *payload, size_t payload_len)
+{
+    uint8_t tx_buf[64];
+    size_t tx_len = ld2410c_build_cmd(tx_buf, cmd, payload, payload_len);
+
+    /* Flush any pending RX data */
+    uart_flush_input(s_port);
+
+    /* Send command */
+    int written = uart_write_bytes(s_port, tx_buf, tx_len);
+    if (written != (int)tx_len) return ESP_FAIL;
+
+    /* Read ACK — scan for command header */
+    uint8_t rx_buf[64];
+    int rx_pos = 0;
+    int hdr_matched = 0;
+    TickType_t start = xTaskGetTickCount();
+    TickType_t timeout_ticks = pdMS_TO_TICKS(CMD_ACK_TIMEOUT_MS);
+
+    while ((xTaskGetTickCount() - start) < timeout_ticks) {
+        uint8_t byte;
+        int rd = uart_read_bytes(s_port, &byte, 1, pdMS_TO_TICKS(100));
+        if (rd <= 0) continue;
+
+        if (hdr_matched < CMD_HEADER_LEN) {
+            if (byte == CMD_HEADER[hdr_matched]) {
+                rx_buf[hdr_matched] = byte;
+                hdr_matched++;
+                if (hdr_matched == CMD_HEADER_LEN) rx_pos = CMD_HEADER_LEN;
+            } else {
+                hdr_matched = (byte == CMD_HEADER[0]) ? 1 : 0;
+                if (hdr_matched) rx_buf[0] = byte;
+            }
+            continue;
+        }
+
+        if (rx_pos < (int)sizeof(rx_buf)) {
+            rx_buf[rx_pos++] = byte;
+        } else {
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        /* Check for footer */
+        if (rx_pos >= 10 &&
+            rx_buf[rx_pos - 4] == CMD_FOOTER[0] &&
+            rx_buf[rx_pos - 3] == CMD_FOOTER[1] &&
+            rx_buf[rx_pos - 2] == CMD_FOOTER[2] &&
+            rx_buf[rx_pos - 1] == CMD_FOOTER[3]) {
+            return ld2410c_parse_ack(rx_buf, rx_pos, cmd);
+        }
+    }
+
+    return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t ld2410c_configure(uint8_t max_move_gate, uint8_t max_still_gate,
+                            const uint8_t *move_thresh, const uint8_t *still_thresh,
+                            uint16_t no_one_timeout)
+{
+    if (s_port < 0) return ESP_ERR_INVALID_STATE;
+    if (max_move_gate > 8 || max_still_gate > 8) return ESP_ERR_INVALID_ARG;
+
+    esp_err_t ret;
+
+    /* 1. Enter config mode */
+    uint8_t enable_payload[] = {0x01, 0x00};
+    ret = ld2410c_send_cmd(LD2410C_CMD_ENABLE_CONFIG, enable_payload, sizeof(enable_payload));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Enable config failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG, "Config mode enabled");
+
+    /* 2. Set max gate distances and no-one timeout */
+    uint8_t gate_payload[] = {
+        0x00, 0x00, max_move_gate, 0x00, 0x00, 0x00,    /* word 0: max move gate */
+        0x01, 0x00, max_still_gate, 0x00, 0x00, 0x00,    /* word 1: max still gate */
+        0x02, 0x00, (uint8_t)(no_one_timeout & 0xFF),     /* word 2: no-one timeout */
+                    (uint8_t)(no_one_timeout >> 8), 0x00, 0x00,
+    };
+    ret = ld2410c_send_cmd(LD2410C_CMD_SET_MAX_GATE, gate_payload, sizeof(gate_payload));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Set max gate failed: %s", esp_err_to_name(ret));
+        goto end_config;
+    }
+    ESP_LOGI(TAG, "Max gates: move=%u still=%u timeout=%us",
+             max_move_gate, max_still_gate, no_one_timeout);
+
+    /* 3. Set per-gate sensitivity */
+    for (uint8_t g = 0; g <= (max_move_gate > max_still_gate ? max_move_gate : max_still_gate); g++) {
+        uint8_t mv = (move_thresh && g <= max_move_gate) ? move_thresh[g] : 50;
+        uint8_t st = (still_thresh && g <= max_still_gate) ? still_thresh[g] : 50;
+        uint8_t sens_payload[] = {
+            0x00, 0x00, g, 0x00, 0x00, 0x00,       /* word 0: gate number */
+            0x01, 0x00, mv, 0x00, 0x00, 0x00,       /* word 1: move sensitivity */
+            0x02, 0x00, st, 0x00, 0x00, 0x00,       /* word 2: still sensitivity */
+        };
+        ret = ld2410c_send_cmd(LD2410C_CMD_SET_GATE_SENS, sens_payload, sizeof(sens_payload));
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Set gate %u sensitivity failed: %s", g, esp_err_to_name(ret));
+            goto end_config;
+        }
+        ESP_LOGD(TAG, "Gate %u: move=%u still=%u", g, mv, st);
+    }
+    ESP_LOGI(TAG, "Gate sensitivity configured");
+
+end_config:
+    /* 4. Exit config mode (always attempt even on error) */
+    {
+        esp_err_t end_ret = ld2410c_send_cmd(LD2410C_CMD_END_CONFIG, NULL, 0);
+        if (end_ret != ESP_OK) {
+            ESP_LOGE(TAG, "End config failed: %s", esp_err_to_name(end_ret));
+            if (ret == ESP_OK) ret = end_ret;
+        } else {
+            ESP_LOGI(TAG, "Config mode ended");
+        }
+    }
+
+    return ret;
+}
+
 esp_err_t ld2410c_init(uart_port_t port, int tx_pin, int rx_pin)
 {
     uart_config_t uart_cfg = {

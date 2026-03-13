@@ -69,6 +69,16 @@ void app_main(void)
         esp_restart();
     }
 
+    /* Configure LD2410C for max range (all 9 gates = 6.75m)
+     * Sensitivity: lower = more sensitive. Near gates need higher
+     * thresholds to reject desk/breadboard reflections. */
+    static const uint8_t move_sens[]  = {75, 75, 60, 50, 40, 30, 20, 20, 20};
+    static const uint8_t still_sens[] = {75, 75, 60, 50, 40, 30, 20, 20, 20};
+    ret = ld2410c_configure(8, 8, move_sens, still_sens, 5);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "LD2410C configure failed: %s — using defaults", esp_err_to_name(ret));
+    }
+
     /* 3. Initialise VL53L0X (I2C) */
     ret = vl53l0x_init(I2C_NUM_0, VL53L0X_SDA_PIN, VL53L0X_SCL_PIN, VL53L0X_XSHUT_PIN);
     if (ret != ESP_OK) {

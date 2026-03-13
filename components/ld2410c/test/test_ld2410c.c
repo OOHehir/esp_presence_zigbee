@@ -176,3 +176,143 @@ TEST_CASE("NULL output returns error", "[ld2410c]")
     build_frame(buf, &len, 0x00, 0, 0, 0, 0, 0);
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, ld2410c_parse_frame(buf, len, NULL));
 }
+
+/* ── Command frame building tests ──────────────────────────── */
+
+TEST_CASE("Build enable config command has correct structure", "[ld2410c]")
+{
+    uint8_t buf[32];
+    uint8_t payload[] = {0x01, 0x00};
+    size_t len = ld2410c_build_cmd(buf, LD2410C_CMD_ENABLE_CONFIG, payload, 2);
+
+    /* Total: header(4) + len(2) + cmd(2) + payload(2) + footer(4) = 14 */
+    TEST_ASSERT_EQUAL(14, len);
+
+    /* Header */
+    TEST_ASSERT_EQUAL_HEX8(0xFD, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0xFC, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0xFB, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0xFA, buf[3]);
+
+    /* Length = 4 (2 cmd + 2 payload) */
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[4]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[5]);
+
+    /* Command 0x00FF little-endian */
+    TEST_ASSERT_EQUAL_HEX8(0xFF, buf[6]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[7]);
+
+    /* Payload */
+    TEST_ASSERT_EQUAL_HEX8(0x01, buf[8]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[9]);
+
+    /* Footer */
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[10]);
+    TEST_ASSERT_EQUAL_HEX8(0x03, buf[11]);
+    TEST_ASSERT_EQUAL_HEX8(0x02, buf[12]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, buf[13]);
+}
+
+TEST_CASE("Build end config command (no payload)", "[ld2410c]")
+{
+    uint8_t buf[32];
+    size_t len = ld2410c_build_cmd(buf, LD2410C_CMD_END_CONFIG, NULL, 0);
+
+    /* Total: header(4) + len(2) + cmd(2) + footer(4) = 12 */
+    TEST_ASSERT_EQUAL(12, len);
+
+    /* Length = 2 (cmd only) */
+    TEST_ASSERT_EQUAL_HEX8(0x02, buf[4]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[5]);
+
+    /* Command 0x00FE little-endian */
+    TEST_ASSERT_EQUAL_HEX8(0xFE, buf[6]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[7]);
+}
+
+/* ── ACK parsing tests ─────────────────────────────────────── */
+
+/* Helper: build a valid ACK frame */
+static void build_ack(uint8_t *buf, size_t *len, uint16_t cmd, uint16_t status)
+{
+    size_t i = 0;
+    /* Header */
+    buf[i++] = 0xFD; buf[i++] = 0xFC; buf[i++] = 0xFB; buf[i++] = 0xFA;
+    /* Length = 4 (cmd_echo(2) + status(2)) */
+    buf[i++] = 0x04; buf[i++] = 0x00;
+    /* ACK echoes cmd | 0x0100 */
+    uint16_t ack_cmd = cmd | 0x0100;
+    buf[i++] = ack_cmd & 0xFF;
+    buf[i++] = (ack_cmd >> 8) & 0xFF;
+    /* Status */
+    buf[i++] = status & 0xFF;
+    buf[i++] = (status >> 8) & 0xFF;
+    /* Footer */
+    buf[i++] = 0x04; buf[i++] = 0x03; buf[i++] = 0x02; buf[i++] = 0x01;
+    *len = i;
+}
+
+TEST_CASE("Valid ACK for enable config parses successfully", "[ld2410c]")
+{
+    uint8_t buf[32];
+    size_t len;
+    build_ack(buf, &len, LD2410C_CMD_ENABLE_CONFIG, 0x0000);
+    TEST_ASSERT_EQUAL(ESP_OK, ld2410c_parse_ack(buf, len, LD2410C_CMD_ENABLE_CONFIG));
+}
+
+TEST_CASE("Valid ACK for set max gate parses successfully", "[ld2410c]")
+{
+    uint8_t buf[32];
+    size_t len;
+    build_ack(buf, &len, LD2410C_CMD_SET_MAX_GATE, 0x0000);
+    TEST_ASSERT_EQUAL(ESP_OK, ld2410c_parse_ack(buf, len, LD2410C_CMD_SET_MAX_GATE));
+}
+
+TEST_CASE("ACK with failure status returns ESP_FAIL", "[ld2410c]")
+{
+    uint8_t buf[32];
+    size_t len;
+    build_ack(buf, &len, LD2410C_CMD_ENABLE_CONFIG, 0x0001);
+    TEST_ASSERT_EQUAL(ESP_FAIL, ld2410c_parse_ack(buf, len, LD2410C_CMD_ENABLE_CONFIG));
+}
+
+TEST_CASE("ACK with wrong command returns ESP_ERR_INVALID_RESPONSE", "[ld2410c]")
+{
+    uint8_t buf[32];
+    size_t len;
+    build_ack(buf, &len, LD2410C_CMD_ENABLE_CONFIG, 0x0000);
+    /* Check against a different command */
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_RESPONSE,
+                      ld2410c_parse_ack(buf, len, LD2410C_CMD_END_CONFIG));
+}
+
+TEST_CASE("ACK with bad header returns error", "[ld2410c]")
+{
+    uint8_t buf[32];
+    size_t len;
+    build_ack(buf, &len, LD2410C_CMD_ENABLE_CONFIG, 0x0000);
+    buf[0] = 0x00; /* corrupt header */
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, ld2410c_parse_ack(buf, len, LD2410C_CMD_ENABLE_CONFIG));
+}
+
+TEST_CASE("ACK with bad footer returns error", "[ld2410c]")
+{
+    uint8_t buf[32];
+    size_t len;
+    build_ack(buf, &len, LD2410C_CMD_ENABLE_CONFIG, 0x0000);
+    buf[len - 1] = 0xFF; /* corrupt footer */
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, ld2410c_parse_ack(buf, len, LD2410C_CMD_ENABLE_CONFIG));
+}
+
+TEST_CASE("ACK too short returns error", "[ld2410c]")
+{
+    uint8_t buf[] = {0xFD, 0xFC, 0xFB, 0xFA, 0x02, 0x00};
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      ld2410c_parse_ack(buf, sizeof(buf), LD2410C_CMD_ENABLE_CONFIG));
+}
+
+TEST_CASE("NULL ACK buffer returns error", "[ld2410c]")
+{
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      ld2410c_parse_ack(NULL, 14, LD2410C_CMD_ENABLE_CONFIG));
+}
