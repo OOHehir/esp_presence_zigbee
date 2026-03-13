@@ -40,10 +40,12 @@ TEST_CASE("Status 5 (hw fail) maps to 255 (no target)", "[vl53l0x]")
     TEST_ASSERT_EQUAL_UINT8(255, vl53l0x_map_status(5));
 }
 
-TEST_CASE("Unknown status maps to 255 (no target)", "[vl53l0x]")
+TEST_CASE("Unknown status maps to 0 (treat as valid)", "[vl53l0x]")
 {
-    TEST_ASSERT_EQUAL_UINT8(255, vl53l0x_map_status(99));
-    TEST_ASSERT_EQUAL_UINT8(255, vl53l0x_map_status(255));
+    /* Unknown status codes (e.g. 11 from CjVL53LXXv2 board) often
+     * accompany valid range data — range threshold handles no-target */
+    TEST_ASSERT_EQUAL_UINT8(0, vl53l0x_map_status(99));
+    TEST_ASSERT_EQUAL_UINT8(0, vl53l0x_map_status(11));
 }
 
 /* ── Struct size test ────────────────────────────────────────── */
@@ -58,9 +60,14 @@ TEST_CASE("vl53l0x_data_t packs to expected size", "[vl53l0x]")
 
 /* ── Sentinel value test ─────────────────────────────────────── */
 
-TEST_CASE("Out-of-range sentinel is 2000mm", "[vl53l0x]")
+TEST_CASE("Out-of-range sentinel is 200cm", "[vl53l0x]")
 {
-    TEST_ASSERT_EQUAL_UINT16(2000, VL53L0X_OUT_OF_RANGE_MM);
+    TEST_ASSERT_EQUAL_UINT16(200, VL53L0X_OUT_OF_RANGE_CM);
+}
+
+TEST_CASE("Max reliable range is 1200mm", "[vl53l0x]")
+{
+    TEST_ASSERT_EQUAL_UINT16(1200, VL53L0X_MAX_RANGE_MM);
 }
 
 /*

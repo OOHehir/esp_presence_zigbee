@@ -17,6 +17,7 @@ static const char *TAG = "zigbee_node";
 static uint32_t s_rejoin_delay_ms = REJOIN_INITIAL_MS;
 static TaskFunction_t s_sensor_task_fn = NULL;
 static bool s_sensor_task_started = false;
+static volatile bool s_network_joined = false;
 
 /* ── Signal handler ──────────────────────────────────────────── */
 void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
@@ -28,6 +29,10 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     switch (sig_type) {
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
         ESP_LOGI(TAG, "Zigbee stack initialised");
+        if (s_sensor_task_fn && !s_sensor_task_started) {
+            xTaskCreate(s_sensor_task_fn, "sensor_report", 4096, NULL, 5, NULL);
+            s_sensor_task_started = true;
+        }
         esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
         break;
 
@@ -48,10 +53,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                      esp_zb_get_pan_id(), esp_zb_get_short_address(),
                      esp_zb_get_current_channel());
             s_rejoin_delay_ms = REJOIN_INITIAL_MS;
-            if (s_sensor_task_fn && !s_sensor_task_started) {
-                xTaskCreate(s_sensor_task_fn, "sensor_report", 4096, NULL, 5, NULL);
-                s_sensor_task_started = true;
-            }
+            s_network_joined = true;
         } else {
             ESP_LOGW(TAG, "Steering failed (0x%x), retry in %lu ms",
                      status, (unsigned long)s_rejoin_delay_ms);
@@ -67,6 +69,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 
     case ESP_ZB_ZDO_SIGNAL_LEAVE:
         ESP_LOGW(TAG, "Left network — rejoining");
+        s_network_joined = false;
         s_rejoin_delay_ms = REJOIN_INITIAL_MS;
         esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
         break;
@@ -176,8 +179,8 @@ void zigbee_node_start(TaskFunction_t sensor_task_fn)
 esp_err_t zigbee_node_update_ld2410c(const ld2410c_data_t *data)
 {
     if (!data) return ESP_ERR_INVALID_ARG;
+    if (!s_network_joined) return ESP_OK;
 
-    /* Pack presence as a simple float: 1.0 = present, 0.0 = not present */
     float presence = (data->moving_target || data->stationary_target) ? 1.0f : 0.0f;
 
     esp_zb_lock_acquire(portMAX_DELAY);
@@ -192,8 +195,9 @@ esp_err_t zigbee_node_update_ld2410c(const ld2410c_data_t *data)
 esp_err_t zigbee_node_update_vl53l0x(const vl53l0x_data_t *data)
 {
     if (!data) return ESP_ERR_INVALID_ARG;
+    if (!s_network_joined) return ESP_OK;
 
-    float range = (float)data->range_mm;
+    float range = (float)data->range_cm;
 
     esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_zcl_set_attribute_val(EP_RANGE,

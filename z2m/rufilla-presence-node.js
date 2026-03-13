@@ -8,7 +8,7 @@ const fz = {
 
             switch (msg.endpoint.ID) {
             case 1: return {presence: val > 0.5};
-            case 2: return {range_mm: Math.round(val)};
+            case 2: return {range_cm: Math.round(val)};
             }
         },
     },
@@ -24,7 +24,7 @@ const definition = {
     meta: {multiEndpoint: true},
     endpoint: (device) => ({
         presence: 1,
-        range_mm: 2,
+        range_cm: 2,
     }),
     exposes: [
         {
@@ -38,9 +38,9 @@ const definition = {
         },
         {
             type: 'numeric',
-            name: 'range_mm',
-            property: 'range_mm',
-            unit: 'mm',
+            name: 'range_cm',
+            property: 'range_cm',
+            unit: 'cm',
             access: 1,
             description: 'VL53L0X measured range',
         },

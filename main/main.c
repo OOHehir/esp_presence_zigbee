@@ -14,8 +14,9 @@ static const char *TAG = "main";
 /* Pin assignments */
 #define LD2410C_TX_PIN  GPIO_NUM_4
 #define LD2410C_RX_PIN  GPIO_NUM_5
-#define VL53L0X_SDA_PIN GPIO_NUM_6
-#define VL53L0X_SCL_PIN GPIO_NUM_7
+#define VL53L0X_SDA_PIN   GPIO_NUM_6
+#define VL53L0X_SCL_PIN   GPIO_NUM_7
+#define VL53L0X_XSHUT_PIN GPIO_NUM_8
 
 /* Sensor polling interval */
 #define SENSOR_REPORT_INTERVAL_MS 5000
@@ -40,8 +41,8 @@ static void sensor_report_task(void *arg)
         }
 
         if (vl_err == ESP_OK) {
-            ESP_LOGI(TAG, "VL53L0X: range=%umm status=%u",
-                     vl_data.range_mm, vl_data.status);
+            ESP_LOGI(TAG, "VL53L0X: range=%ucm status=%u",
+                     vl_data.range_cm, vl_data.status);
             zigbee_node_update_vl53l0x(&vl_data);
         } else {
             ESP_LOGW(TAG, "VL53L0X read failed: %s", esp_err_to_name(vl_err));
@@ -69,7 +70,7 @@ void app_main(void)
     }
 
     /* 3. Initialise VL53L0X (I2C) */
-    ret = vl53l0x_init(I2C_NUM_0, VL53L0X_SDA_PIN, VL53L0X_SCL_PIN);
+    ret = vl53l0x_init(I2C_NUM_0, VL53L0X_SDA_PIN, VL53L0X_SCL_PIN, VL53L0X_XSHUT_PIN);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "VL53L0X init failed: %s — restarting", esp_err_to_name(ret));
         esp_restart();

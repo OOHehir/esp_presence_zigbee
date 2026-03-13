@@ -22,13 +22,13 @@ void zigbee_node_start(TaskFunction_t sensor_task_fn);
 /**
  * Update LD2410C sensor data on the Zigbee endpoint.
  * Thread-safe — acquires the Zigbee lock internally.
- * Updates Occupancy cluster (0x0406) and custom cluster 0xFC00.
+ * Updates Analog Input on endpoint 1 (presence as 0.0/1.0).
  */
 esp_err_t zigbee_node_update_ld2410c(const ld2410c_data_t *data);
 
 /**
  * Update VL53L0X sensor data on the Zigbee endpoint.
  * Thread-safe — acquires the Zigbee lock internally.
- * Updates custom cluster 0xFC01.
+ * Updates Analog Input on endpoint 2 (range in cm as float).
  */
 esp_err_t zigbee_node_update_vl53l0x(const vl53l0x_data_t *data);

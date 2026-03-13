@@ -5,7 +5,7 @@ ESP32-C6 Zigbee end device combining an HLK-LD2410C 24 GHz mmWave radar and a VL
 ## Status
 
 - LD2410C presence detection: **working end-to-end** (ESP32 -> Zigbee -> Z2M -> MQTT)
-- VL53L0X ToF ranging: **working end-to-end** (endpoint 2, range in mm)
+- VL53L0X ToF ranging: **working end-to-end** (endpoint 2, range in cm)
 
 ## Hardware
 
@@ -30,7 +30,7 @@ Power: mains via USB (no battery constraints currently).
 | Device type | End Device (ZED) |
 | Profile | Home Automation (`0x0104`) |
 | Endpoint 1 | Analog Input — LD2410C presence (`1.0` = present, `0.0` = absent) |
-| Endpoint 2 | Analog Input — VL53L0X range (mm as float, `2000` = out of range) |
+| Endpoint 2 | Analog Input — VL53L0X range (cm as float, `200` = out of range) |
 | Reporting | Automatic via ZBOSS stack on `set_attribute_val()` |
 | Report interval | ~5 s (sensor polling rate) |
 | Channel | 15 |
@@ -95,13 +95,13 @@ Restart Z2M to load the converter.
 ### MQTT Output
 
 ```json
-{"presence": true, "range_mm": 150, "linkquality": 255}
+{"presence": true, "range_cm": 15, "linkquality": 255}
 ```
 
 | Field | Type | Description |
 |---|---|---|
 | `presence` | boolean | `true` if moving or stationary target detected |
-| `range_mm` | numeric (mm) | VL53L0X distance measurement (2000 = out of range / no target) |
+| `range_cm` | numeric (cm) | VL53L0X distance measurement (200 = out of range / no target) |
 | `linkquality` | numeric (0-255) | Zigbee link quality indicator |
 
 ## Factory Reset

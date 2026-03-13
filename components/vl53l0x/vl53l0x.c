@@ -1,6 +1,7 @@
 #include "vl53l0x.h"
 #include <string.h>
 #include "esp_log.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -91,8 +92,9 @@ uint8_t vl53l0x_map_status(uint8_t device_status)
         return 2;
     case RANGE_STATUS_PHASE_FAIL:
     case RANGE_STATUS_HW_FAIL:
-    default:
         return 255; /* no target / error */
+    default:
+        return 0;   /* unknown status — treat as valid if range is plausible */
     }
 }
 
@@ -174,8 +176,22 @@ static esp_err_t vl53l0x_sensor_init(void)
     return ESP_OK;
 }
 
-esp_err_t vl53l0x_init(i2c_port_t port, int sda_pin, int scl_pin)
+esp_err_t vl53l0x_init(i2c_port_t port, int sda_pin, int scl_pin, gpio_num_t xshut_pin)
 {
+    /* Hardware reset via XSHUT if pin is provided */
+    if (xshut_pin != GPIO_NUM_NC) {
+        gpio_config_t io_cfg = {
+            .pin_bit_mask = 1ULL << xshut_pin,
+            .mode = GPIO_MODE_OUTPUT,
+        };
+        gpio_config(&io_cfg);
+        gpio_set_level(xshut_pin, 0);    /* hold in shutdown */
+        vTaskDelay(pdMS_TO_TICKS(5));
+        gpio_set_level(xshut_pin, 1);    /* release — sensor boots */
+        vTaskDelay(pdMS_TO_TICKS(2));     /* wait for boot (1.2ms typical) */
+        ESP_LOGI(TAG, "XSHUT reset on GPIO%d", xshut_pin);
+    }
+
     /* Create I2C master bus */
     i2c_master_bus_config_t bus_cfg = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
@@ -243,7 +259,8 @@ esp_err_t vl53l0x_read(vl53l0x_data_t *out)
     } while (!(status & 0x07) && --timeout > 0);
 
     if (timeout == 0) {
-        out->range_mm = VL53L0X_OUT_OF_RANGE_MM;
+        ESP_LOGW(TAG, "Measurement timed out (interrupt status=0x%02X)", status);
+        out->range_cm = VL53L0X_OUT_OF_RANGE_CM;
         out->status = 255;
         return ESP_OK; /* Return sentinel rather than error */
     }
@@ -264,10 +281,12 @@ esp_err_t vl53l0x_read(vl53l0x_data_t *out)
     /* Extract range in mm (bytes 10-11, big-endian) */
     uint16_t range = ((uint16_t)result[10] << 8) | result[11];
 
-    if (out->status != 0 || range > VL53L0X_OUT_OF_RANGE_MM) {
-        out->range_mm = VL53L0X_OUT_OF_RANGE_MM;
+    ESP_LOGD(TAG, "Raw: range_status=%u mapped=%u range=%u mm", range_status, out->status, range);
+
+    if (out->status != 0 || range > VL53L0X_MAX_RANGE_MM) {
+        out->range_cm = VL53L0X_OUT_OF_RANGE_CM;
     } else {
-        out->range_mm = range;
+        out->range_cm = (range + 5) / 10;  /* mm → cm, rounded */
     }
 
     return ESP_OK;
