@@ -1,16 +1,16 @@
 # Rufilla Presence Node
 
-ESP32-C6 Zigbee end device combining an HLK-LD2410C 24 GHz mmWave radar and a VL53L0X time-of-flight ranging sensor. Currently reports binary presence over Zigbee using the standard Analog Input cluster (`genAnalogInput` / `0x000C`).
+ESP32-C6 Zigbee end device combining an HLK-LD2410C 24 GHz mmWave radar and a VL53L0X time-of-flight ranging sensor. Reports presence and range data over Zigbee using the standard Analog Input cluster (`genAnalogInput` / `0x000C`) on two endpoints.
 
 ## Status
 
 - LD2410C presence detection: **working end-to-end** (ESP32 -> Zigbee -> Z2M -> MQTT)
-- VL53L0X ToF ranging: driver working, Zigbee reporting **placeholder** (to be added as endpoint 2)
+- VL53L0X ToF ranging: **working end-to-end** (endpoint 2, range in mm)
 
 ## Hardware
 
 ### Target
-ESP32-C6 (QFN40) with native IEEE 802.15.4 radio. Uses USB-Serial/JTAG for flashing and console output.
+ESP32-C6 (QFN40) with native IEEE 802.15.4 radio. Configured as Zigbee End Device (ZED) to support future battery operation.
 
 ### Wiring
 
@@ -21,7 +21,7 @@ ESP32-C6 (QFN40) with native IEEE 802.15.4 radio. Uses USB-Serial/JTAG for flash
 | VL53L0X SDA | GPIO6 | I2C0, 400 kHz |
 | VL53L0X SCL | GPIO7 | I2C0 |
 
-Power: mains via USB (no battery constraints).
+Power: mains via USB (no battery constraints currently).
 
 ## Zigbee Architecture
 
@@ -29,9 +29,9 @@ Power: mains via USB (no battery constraints).
 |---|---|
 | Device type | End Device (ZED) |
 | Profile | Home Automation (`0x0104`) |
-| Endpoint 1 | Analog Input cluster (`0x000C`), server role |
-| Attribute | `present_value` (`0x0055`) — `1.0` = presence, `0.0` = absent |
-| Reporting | Automatic on attribute change via ZBOSS stack (no explicit bindings or reporting config needed) |
+| Endpoint 1 | Analog Input — LD2410C presence (`1.0` = present, `0.0` = absent) |
+| Endpoint 2 | Analog Input — VL53L0X range (mm as float, `2000` = out of range) |
+| Reporting | Automatic via ZBOSS stack on `set_attribute_val()` |
 | Report interval | ~5 s (sensor polling rate) |
 | Channel | 15 |
 | Manufacturer | `Rufilla` |
@@ -39,7 +39,11 @@ Power: mains via USB (no battery constraints).
 
 ### How reporting works
 
-The firmware calls `esp_zb_zcl_set_attribute_val()` every 5 seconds. The ZBOSS stack automatically sends unsolicited attribute reports to the coordinator — no explicit `report_attr_cmd_req()` or binding table entries are needed. This matches the pattern used by the [sound level monitor](https://github.com/OOHehir/esp_sound_lvl_zigbee).
+The firmware calls `esp_zb_zcl_set_attribute_val()` every 5 seconds on each endpoint. The ZBOSS stack automatically sends unsolicited attribute reports to the coordinator — no explicit `report_attr_cmd_req()` or binding table entries are needed. This matches the pattern used by the [sound level monitor](https://github.com/OOHehir/esp_sound_lvl_zigbee).
+
+### Endpoint design notes
+
+The ZED binding table on ESP32-C6 is small (~7 entries). Two endpoints with one binding each is safe. If more sensors are added in future, a fallback strategy is to encode multiple values into a single float on one endpoint (e.g. integer part = presence, fractional part = range).
 
 ## Build and Flash
 
@@ -70,7 +74,9 @@ idf.py -p /dev/ttyACM0 flash monitor
 
 ### External Converter
 
-Copy `z2m/rufilla-presence-node.js` to your Z2M `data/` directory (or a subdirectory like `converters/`) and reference it in `configuration.yaml`:
+Copy `z2m/rufilla-presence-node.js` to your Z2M `data/external_converters/` directory. Z2M v2.9+ auto-loads converters from this directory — no `configuration.yaml` entry needed.
+
+For older Z2M versions, reference the converter in `configuration.yaml`:
 
 ```yaml
 external_converters:
@@ -89,12 +95,13 @@ Restart Z2M to load the converter.
 ### MQTT Output
 
 ```json
-{"presence": true, "linkquality": 255}
+{"presence": true, "range_mm": 150, "linkquality": 255}
 ```
 
 | Field | Type | Description |
 |---|---|---|
 | `presence` | boolean | `true` if moving or stationary target detected |
+| `range_mm` | numeric (mm) | VL53L0X distance measurement (2000 = out of range / no target) |
 | `linkquality` | numeric (0-255) | Zigbee link quality indicator |
 
 ## Factory Reset
@@ -125,7 +132,7 @@ idf.py erase-flash
 
 ```
 ├── CMakeLists.txt
-├── sdkconfig.defaults          # ZB_ENABLED, native radio, USB console
+├── sdkconfig.defaults          # ZB_ZED, native radio
 ├── partitions.csv
 ├── main/
 │   ├── main.c                  # Init sensors, start Zigbee main loop
@@ -139,11 +146,11 @@ idf.py erase-flash
 │   │   ├── include/vl53l0x.h
 │   │   ├── vl53l0x.c
 │   │   └── test/test_vl53l0x.c
-│   └── zigbee_node/            # Zigbee end device + Analog Input cluster
+│   └── zigbee_node/            # Zigbee end device + Analog Input clusters
 │       ├── include/zigbee_node.h
 │       └── zigbee_node.c
 ├── z2m/
-│   └── rufilla-presence-node.js  # Z2M external converter
+│   └── rufilla-presence-node.js  # Z2M external converter (multi-endpoint)
 └── test/
     └── main/test_main.c
 ```
@@ -157,8 +164,3 @@ idf.py build flash monitor
 ```
 
 Tests cover LD2410C frame parsing and VL53L0X status mapping.
-
-## Next Steps
-
-- Add VL53L0X range reporting as endpoint 2 (second Analog Input cluster)
-- Evaluate encoding strategy to keep endpoint count minimal

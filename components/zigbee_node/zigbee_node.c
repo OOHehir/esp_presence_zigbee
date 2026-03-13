@@ -6,7 +6,8 @@
 
 static const char *TAG = "zigbee_node";
 
-#define ENDPOINT_ID           1
+#define EP_PRESENCE           1
+#define EP_RANGE              2
 #define ANALOG_IN_CLUSTER     0x000C
 #define ATTR_PRESENT_VALUE    0x0055
 
@@ -110,15 +111,16 @@ void zigbee_node_start(TaskFunction_t sensor_task_fn)
     };
     esp_zb_init(&zb_nwk_cfg);
 
-    /* Single Analog Input cluster — identical to working sound sensor */
     esp_zb_analog_input_cluster_cfg_t ai_cfg = { .present_value = 0.0f };
-    esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
+
+    /* ── Endpoint 1: LD2410C presence (0.0 / 1.0) ─────────────── */
+    esp_zb_cluster_list_t *cl_presence = esp_zb_zcl_cluster_list_create();
     esp_zb_cluster_list_add_analog_input_cluster(
-        cluster_list,
+        cl_presence,
         esp_zb_analog_input_cluster_create(&ai_cfg),
         ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-    /* Basic + Identify for device identification */
+    /* Basic + Identify on endpoint 1 for device identification */
     esp_zb_basic_cluster_cfg_t basic_cfg = { .power_source = 0x01 };
     esp_zb_attribute_list_t *basic_attrs = esp_zb_basic_cluster_create(&basic_cfg);
     static char manufacturer[] = {7, 'R', 'u', 'f', 'i', 'l', 'l', 'a'};
@@ -127,23 +129,41 @@ void zigbee_node_start(TaskFunction_t sensor_task_fn)
     static char model[] = {16, 'p', 'r', 'e', 's', 'e', 'n', 'c', 'e', '-', 'n', 'o', 'd', 'e', '-', 'v', '1'};
     esp_zb_basic_cluster_add_attr(basic_attrs,
         ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, model);
-    esp_zb_cluster_list_add_basic_cluster(cluster_list, basic_attrs,
+    esp_zb_cluster_list_add_basic_cluster(cl_presence, basic_attrs,
         ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     esp_zb_identify_cluster_cfg_t identify_cfg = { .identify_time = 0 };
-    esp_zb_cluster_list_add_identify_cluster(cluster_list,
+    esp_zb_cluster_list_add_identify_cluster(cl_presence,
         esp_zb_identify_cluster_create(&identify_cfg),
         ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
+    /* ── Endpoint 2: VL53L0X range (mm as float) ──────────────── */
+    esp_zb_cluster_list_t *cl_range = esp_zb_zcl_cluster_list_create();
+    esp_zb_cluster_list_add_analog_input_cluster(
+        cl_range,
+        esp_zb_analog_input_cluster_create(&ai_cfg),
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
+    /* ── Register both endpoints ───────────────────────────────── */
     esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
-    esp_zb_endpoint_config_t ep_cfg = {
-        .endpoint       = ENDPOINT_ID,
+
+    esp_zb_endpoint_config_t ep1_cfg = {
+        .endpoint       = EP_PRESENCE,
         .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
         .app_device_id  = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID,
     };
-    esp_zb_ep_list_add_ep(ep_list, cluster_list, ep_cfg);
+    esp_zb_ep_list_add_ep(ep_list, cl_presence, ep1_cfg);
+
+    esp_zb_endpoint_config_t ep2_cfg = {
+        .endpoint       = EP_RANGE,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id  = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID,
+    };
+    esp_zb_ep_list_add_ep(ep_list, cl_range, ep2_cfg);
+
     esp_zb_device_register(ep_list);
-    ESP_LOGI(TAG, "Device registered (endpoint %d, Analog Input)", ENDPOINT_ID);
+    ESP_LOGI(TAG, "Device registered (ep %d=presence, ep %d=range)",
+             EP_PRESENCE, EP_RANGE);
 
     esp_zb_core_action_handler_register(zb_action_handler);
     esp_zb_set_primary_network_channel_set(1 << 15);
@@ -161,7 +181,7 @@ esp_err_t zigbee_node_update_ld2410c(const ld2410c_data_t *data)
     float presence = (data->moving_target || data->stationary_target) ? 1.0f : 0.0f;
 
     esp_zb_lock_acquire(portMAX_DELAY);
-    esp_zb_zcl_set_attribute_val(ENDPOINT_ID,
+    esp_zb_zcl_set_attribute_val(EP_PRESENCE,
         ANALOG_IN_CLUSTER, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
         ATTR_PRESENT_VALUE, &presence, false);
     esp_zb_lock_release();
@@ -171,7 +191,15 @@ esp_err_t zigbee_node_update_ld2410c(const ld2410c_data_t *data)
 
 esp_err_t zigbee_node_update_vl53l0x(const vl53l0x_data_t *data)
 {
-    /* Placeholder — will add second endpoint later */
-    (void)data;
+    if (!data) return ESP_ERR_INVALID_ARG;
+
+    float range = (float)data->range_mm;
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_set_attribute_val(EP_RANGE,
+        ANALOG_IN_CLUSTER, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ATTR_PRESENT_VALUE, &range, false);
+    esp_zb_lock_release();
+
     return ESP_OK;
 }

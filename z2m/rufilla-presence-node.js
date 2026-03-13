@@ -1,20 +1,31 @@
+const fz = {
+    analog_input: {
+        cluster: 'genAnalogInput',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            const val = msg.data.presentValue;
+            if (val === undefined) return;
+
+            switch (msg.endpoint.ID) {
+            case 1: return {presence: val > 0.5};
+            case 2: return {range_mm: Math.round(val)};
+            }
+        },
+    },
+};
+
 const definition = {
     zigbeeModel: ['presence-node-v1'],
     model: 'presence-node-v1',
     vendor: 'Rufilla',
-    description: 'Rufilla Intelligence Node — mmWave presence sensor',
-    fromZigbee: [
-        {
-            cluster: 'genAnalogInput',
-            type: ['attributeReport', 'readResponse'],
-            convert: (model, msg, publish, options, meta) => {
-                if (msg.data.presentValue !== undefined) {
-                    return {presence: msg.data.presentValue > 0.5};
-                }
-            },
-        },
-    ],
+    description: 'Rufilla Intelligence Node — mmWave presence + ToF ranging',
+    fromZigbee: [fz.analog_input],
     toZigbee: [],
+    meta: {multiEndpoint: true},
+    endpoint: (device) => ({
+        presence: 1,
+        range_mm: 2,
+    }),
     exposes: [
         {
             type: 'binary',
@@ -25,11 +36,21 @@ const definition = {
             access: 1,
             description: 'Presence detected (mmWave)',
         },
+        {
+            type: 'numeric',
+            name: 'range_mm',
+            property: 'range_mm',
+            unit: 'mm',
+            access: 1,
+            description: 'VL53L0X measured range',
+        },
     ],
     configure: async (device, coordinatorEndpoint, logger) => {
-        const endpoint = device.getEndpoint(1);
-        if (endpoint) {
-            await endpoint.bind('genAnalogInput', coordinatorEndpoint);
+        for (const ep of [1, 2]) {
+            const endpoint = device.getEndpoint(ep);
+            if (endpoint) {
+                await endpoint.bind('genAnalogInput', coordinatorEndpoint);
+            }
         }
     },
 };
