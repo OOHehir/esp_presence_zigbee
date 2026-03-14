@@ -8,6 +8,7 @@ static const char *TAG = "zigbee_node";
 
 #define EP_PRESENCE           1
 #define EP_RANGE              2
+#define EP_RANGE_STATUS       3
 #define ANALOG_IN_CLUSTER     0x000C
 #define ATTR_PRESENT_VALUE    0x0055
 
@@ -140,14 +141,21 @@ void zigbee_node_start(TaskFunction_t sensor_task_fn)
         esp_zb_identify_cluster_create(&identify_cfg),
         ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-    /* ── Endpoint 2: VL53L0X range (mm as float) ──────────────── */
+    /* ── Endpoint 2: VL53L0X range (cm as float) ─────────────── */
     esp_zb_cluster_list_t *cl_range = esp_zb_zcl_cluster_list_create();
     esp_zb_cluster_list_add_analog_input_cluster(
         cl_range,
         esp_zb_analog_input_cluster_create(&ai_cfg),
         ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-    /* ── Register both endpoints ───────────────────────────────── */
+    /* ── Endpoint 3: VL53L0X range status (0=valid, 255=no target) */
+    esp_zb_cluster_list_t *cl_status = esp_zb_zcl_cluster_list_create();
+    esp_zb_cluster_list_add_analog_input_cluster(
+        cl_status,
+        esp_zb_analog_input_cluster_create(&ai_cfg),
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
+    /* ── Register all endpoints ────────────────────────────────── */
     esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
 
     esp_zb_endpoint_config_t ep1_cfg = {
@@ -164,9 +172,16 @@ void zigbee_node_start(TaskFunction_t sensor_task_fn)
     };
     esp_zb_ep_list_add_ep(ep_list, cl_range, ep2_cfg);
 
+    esp_zb_endpoint_config_t ep3_cfg = {
+        .endpoint       = EP_RANGE_STATUS,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id  = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID,
+    };
+    esp_zb_ep_list_add_ep(ep_list, cl_status, ep3_cfg);
+
     esp_zb_device_register(ep_list);
-    ESP_LOGI(TAG, "Device registered (ep %d=presence, ep %d=range)",
-             EP_PRESENCE, EP_RANGE);
+    ESP_LOGI(TAG, "Device registered (ep %d=presence, ep %d=range, ep %d=range_status)",
+             EP_PRESENCE, EP_RANGE, EP_RANGE_STATUS);
 
     esp_zb_core_action_handler_register(zb_action_handler);
     esp_zb_set_primary_network_channel_set(1 << 15);
@@ -176,12 +191,23 @@ void zigbee_node_start(TaskFunction_t sensor_task_fn)
     esp_zb_stack_main_loop();
 }
 
+/* Ceiling baseline distance threshold (cm). Stationary targets at or beyond
+ * this distance are assumed to be the ceiling/wall, not a person. Movement
+ * detection is always trusted regardless of distance. */
+#define CEILING_BASELINE_CM  185
+
 esp_err_t zigbee_node_update_ld2410c(const ld2410c_data_t *data)
 {
     if (!data) return ESP_ERR_INVALID_ARG;
     if (!s_network_joined) return ESP_OK;
 
-    float presence = (data->moving_target || data->stationary_target) ? 1.0f : 0.0f;
+    /* Movement always counts as presence. Stationary only counts if the
+     * target distance is closer than the ceiling baseline — otherwise it's
+     * just the ceiling/wall being detected as a permanent reflector. */
+    bool present = data->moving_target ||
+                   (data->stationary_target && data->target_distance_cm < CEILING_BASELINE_CM);
+
+    float presence = present ? 1.0f : 0.0f;
 
     esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_zcl_set_attribute_val(EP_PRESENCE,
@@ -198,11 +224,15 @@ esp_err_t zigbee_node_update_vl53l0x(const vl53l0x_data_t *data)
     if (!s_network_joined) return ESP_OK;
 
     float range = (float)data->range_cm;
+    float status = (float)data->status;
 
     esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_zcl_set_attribute_val(EP_RANGE,
         ANALOG_IN_CLUSTER, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
         ATTR_PRESENT_VALUE, &range, false);
+    esp_zb_zcl_set_attribute_val(EP_RANGE_STATUS,
+        ANALOG_IN_CLUSTER, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ATTR_PRESENT_VALUE, &status, false);
     esp_zb_lock_release();
 
     return ESP_OK;

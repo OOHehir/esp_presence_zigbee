@@ -35,6 +35,25 @@ static void sensor_report_task(void *arg)
                      ld_data.moving_target, ld_data.stationary_target,
                      ld_data.move_energy, ld_data.static_energy,
                      ld_data.target_distance_cm);
+
+            /* Log per-gate energy values when engineering mode is active */
+            if (ld_data.engineering_mode) {
+                char move_buf[64], still_buf[64];
+                int m_pos = 0, s_pos = 0;
+                uint8_t max_g = ld_data.max_move_gate > ld_data.max_still_gate
+                              ? ld_data.max_move_gate : ld_data.max_still_gate;
+                if (max_g >= LD2410C_MAX_GATES) max_g = LD2410C_MAX_GATES - 1;
+
+                for (uint8_t g = 0; g <= max_g; g++) {
+                    m_pos += snprintf(move_buf + m_pos, sizeof(move_buf) - m_pos,
+                                      "%u ", ld_data.move_gate_energy[g]);
+                    s_pos += snprintf(still_buf + s_pos, sizeof(still_buf) - s_pos,
+                                      "%u ", ld_data.still_gate_energy[g]);
+                }
+                ESP_LOGI(TAG, "  ENG move[0-%u]: %s", max_g, move_buf);
+                ESP_LOGI(TAG, "  ENG still[0-%u]: %s", max_g, still_buf);
+            }
+
             zigbee_node_update_ld2410c(&ld_data);
         } else {
             ESP_LOGW(TAG, "LD2410C read failed: %s", esp_err_to_name(ld_err));
@@ -69,12 +88,19 @@ void app_main(void)
         esp_restart();
     }
 
-    /* Configure LD2410C for max range (all 9 gates = 6.75m)
-     * Sensitivity: lower = more sensitive. Near gates need higher
-     * thresholds to reject desk/breadboard reflections. */
-    static const uint8_t move_sens[]  = {75, 75, 60, 50, 40, 30, 20, 20, 20};
-    static const uint8_t still_sens[] = {75, 75, 60, 50, 40, 30, 20, 20, 20};
-    ret = ld2410c_configure(8, 8, move_sens, still_sens, 5);
+    /* Configure LD2410C for bench-up-at-ceiling deployment (~2m to ceiling).
+     * Gate map: 0=0-75cm (bench clutter), 1=75-150cm (person upper body),
+     *           2=150-225cm (ceiling ~200cm), 3=225-300cm (multipath).
+     * Gate 0: disabled (100) — prototype board reflections
+     * Gate 1: moderate (40) — primary person detection zone
+     * Gate 2: sensitive move (30), high still (60) — ceiling is constant reflector
+     * Gate 3: low sensitivity (80) — only strong multipath bounces
+     * no_one_timeout=10s — debounce periodic false positives
+     * Engineering mode ON — logs per-gate energy for in-situ tuning.
+     * All settings applied in a single config session. */
+    static const uint8_t move_sens[]  = {100, 40, 30, 80};
+    static const uint8_t still_sens[] = {100, 40, 60, 80};
+    ret = ld2410c_configure(3, 3, move_sens, still_sens, 10, true);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "LD2410C configure failed: %s — using defaults", esp_err_to_name(ret));
     }

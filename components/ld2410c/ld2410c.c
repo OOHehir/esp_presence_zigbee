@@ -24,9 +24,15 @@ static const uint8_t FRAME_FOOTER[] = {0xF8, 0xF7, 0xF6, 0xF5};
 #define OFF_STILL_ENERGY 14
 #define OFF_DET_DIST_LO  15
 #define OFF_DET_DIST_HI  16
-/* Byte 17 = tail (0x55), byte 18 = check (0x00), then footer */
+/* Basic mode: byte 17 = tail (0x55), byte 18 = check (0x00), then footer */
 
-#define REPORT_DATA_TYPE 0x02
+/* Engineering mode additional offsets (after byte 16) */
+#define OFF_ENG_MAX_MOVE_GATE   17
+#define OFF_ENG_MAX_STILL_GATE  18
+/* Per-gate energy arrays follow at byte 19 */
+
+#define BASIC_DATA_TYPE  0x02
+#define ENG_DATA_TYPE    0x01
 #define INNER_HEAD       0xAA
 #define INNER_TAIL       0x55
 #define CHECK_BYTE       0x00
@@ -58,16 +64,6 @@ esp_err_t ld2410c_parse_frame(const uint8_t *buf, size_t len, ld2410c_data_t *ou
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* Check data type is reporting frame */
-    if (buf[OFF_DATA_TYPE] != REPORT_DATA_TYPE) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    /* Validate inner head byte */
-    if (buf[OFF_HEAD] != INNER_HEAD) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
     /* Data length field */
     uint16_t data_len = buf[OFF_DATA_LEN_LO] | (buf[OFF_DATA_LEN_HI] << 8);
 
@@ -77,12 +73,26 @@ esp_err_t ld2410c_parse_frame(const uint8_t *buf, size_t len, ld2410c_data_t *ou
         return ESP_ERR_INVALID_ARG;
     }
 
+    /* Check data type — accept both basic and engineering */
+    uint8_t data_type = buf[OFF_DATA_TYPE];
+    if (data_type != BASIC_DATA_TYPE && data_type != ENG_DATA_TYPE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Validate inner head byte */
+    if (buf[OFF_HEAD] != INNER_HEAD) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     /* Validate tail and check bytes (relative to end of data, before footer) */
-    size_t tail_off = HEADER_LEN + 2 + data_len - 2;  /* tail is 2 bytes before end of data */
+    size_t tail_off = HEADER_LEN + 2 + data_len - 2;
     size_t check_off = tail_off + 1;
     if (buf[tail_off] != INNER_TAIL || buf[check_off] != CHECK_BYTE) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    /* Zero-init the output */
+    memset(out, 0, sizeof(*out));
 
     /* Parse target state */
     uint8_t state = buf[OFF_TARGET_STATE];
@@ -95,6 +105,31 @@ esp_err_t ld2410c_parse_frame(const uint8_t *buf, size_t len, ld2410c_data_t *ou
 
     /* Use detection distance as the reported target distance */
     out->target_distance_cm = buf[OFF_DET_DIST_LO] | (buf[OFF_DET_DIST_HI] << 8);
+
+    /* Engineering mode: parse per-gate energy values */
+    if (data_type == ENG_DATA_TYPE) {
+        out->engineering_mode = true;
+        out->max_move_gate = buf[OFF_ENG_MAX_MOVE_GATE];
+        out->max_still_gate = buf[OFF_ENG_MAX_STILL_GATE];
+
+        /* Move gate energy values start at byte 19 */
+        size_t move_count = out->max_move_gate + 1;
+        if (move_count > LD2410C_MAX_GATES) move_count = LD2410C_MAX_GATES;
+        size_t move_start = OFF_ENG_MAX_STILL_GATE + 1;  /* byte 19 */
+
+        for (size_t i = 0; i < move_count && (move_start + i) < (expected_len - FOOTER_LEN - 2); i++) {
+            out->move_gate_energy[i] = buf[move_start + i];
+        }
+
+        /* Still gate energy values follow after move gates */
+        size_t still_count = out->max_still_gate + 1;
+        if (still_count > LD2410C_MAX_GATES) still_count = LD2410C_MAX_GATES;
+        size_t still_start = move_start + move_count;
+
+        for (size_t i = 0; i < still_count && (still_start + i) < (expected_len - FOOTER_LEN - 2); i++) {
+            out->still_gate_energy[i] = buf[still_start + i];
+        }
+    }
 
     return ESP_OK;
 }
@@ -211,7 +246,7 @@ static esp_err_t ld2410c_send_cmd(uint16_t cmd, const uint8_t *payload, size_t p
 
 esp_err_t ld2410c_configure(uint8_t max_move_gate, uint8_t max_still_gate,
                             const uint8_t *move_thresh, const uint8_t *still_thresh,
-                            uint16_t no_one_timeout)
+                            uint16_t no_one_timeout, bool engineering)
 {
     if (s_port < 0) return ESP_ERR_INVALID_STATE;
     if (max_move_gate > 8 || max_still_gate > 8) return ESP_ERR_INVALID_ARG;
@@ -227,41 +262,55 @@ esp_err_t ld2410c_configure(uint8_t max_move_gate, uint8_t max_still_gate,
     }
     ESP_LOGI(TAG, "Config mode enabled");
 
-    /* 2. Set max gate distances and no-one timeout */
-    uint8_t gate_payload[] = {
-        0x00, 0x00, max_move_gate, 0x00, 0x00, 0x00,    /* word 0: max move gate */
-        0x01, 0x00, max_still_gate, 0x00, 0x00, 0x00,    /* word 1: max still gate */
-        0x02, 0x00, (uint8_t)(no_one_timeout & 0xFF),     /* word 2: no-one timeout */
-                    (uint8_t)(no_one_timeout >> 8), 0x00, 0x00,
-    };
-    ret = ld2410c_send_cmd(LD2410C_CMD_SET_MAX_GATE, gate_payload, sizeof(gate_payload));
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Set max gate failed: %s", esp_err_to_name(ret));
-        goto end_config;
+    /* 2. Enable/disable engineering mode first */
+    {
+        uint16_t eng_cmd = engineering ? LD2410C_CMD_ENG_MODE_ON : LD2410C_CMD_ENG_MODE_OFF;
+        ret = ld2410c_send_cmd(eng_cmd, NULL, 0);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Engineering mode %s failed: %s",
+                     engineering ? "enable" : "disable", esp_err_to_name(ret));
+            goto end_config;
+        }
+        ESP_LOGI(TAG, "Engineering mode %s", engineering ? "enabled" : "disabled");
     }
-    ESP_LOGI(TAG, "Max gates: move=%u still=%u timeout=%us",
-             max_move_gate, max_still_gate, no_one_timeout);
 
-    /* 3. Set per-gate sensitivity */
+    /* 3. Set max gate distances and no-one timeout */
+    {
+        uint8_t gate_payload[] = {
+            0x00, 0x00, max_move_gate, 0x00, 0x00, 0x00,
+            0x01, 0x00, max_still_gate, 0x00, 0x00, 0x00,
+            0x02, 0x00, (uint8_t)(no_one_timeout & 0xFF),
+                        (uint8_t)(no_one_timeout >> 8), 0x00, 0x00,
+        };
+        ret = ld2410c_send_cmd(LD2410C_CMD_SET_MAX_GATE, gate_payload, sizeof(gate_payload));
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Set max gate failed: %s", esp_err_to_name(ret));
+            goto end_config;
+        }
+        ESP_LOGI(TAG, "Max gates: move=%u still=%u timeout=%us",
+                 max_move_gate, max_still_gate, no_one_timeout);
+    }
+
+    /* 4. Set per-gate sensitivity */
     for (uint8_t g = 0; g <= (max_move_gate > max_still_gate ? max_move_gate : max_still_gate); g++) {
         uint8_t mv = (move_thresh && g <= max_move_gate) ? move_thresh[g] : 50;
         uint8_t st = (still_thresh && g <= max_still_gate) ? still_thresh[g] : 50;
         uint8_t sens_payload[] = {
-            0x00, 0x00, g, 0x00, 0x00, 0x00,       /* word 0: gate number */
-            0x01, 0x00, mv, 0x00, 0x00, 0x00,       /* word 1: move sensitivity */
-            0x02, 0x00, st, 0x00, 0x00, 0x00,       /* word 2: still sensitivity */
+            0x00, 0x00, g, 0x00, 0x00, 0x00,
+            0x01, 0x00, mv, 0x00, 0x00, 0x00,
+            0x02, 0x00, st, 0x00, 0x00, 0x00,
         };
         ret = ld2410c_send_cmd(LD2410C_CMD_SET_GATE_SENS, sens_payload, sizeof(sens_payload));
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Set gate %u sensitivity failed: %s", g, esp_err_to_name(ret));
             goto end_config;
         }
-        ESP_LOGD(TAG, "Gate %u: move=%u still=%u", g, mv, st);
+        ESP_LOGI(TAG, "Gate %u: move=%u still=%u", g, mv, st);
     }
     ESP_LOGI(TAG, "Gate sensitivity configured");
 
 end_config:
-    /* 4. Exit config mode (always attempt even on error) */
+    /* 5. Exit config mode (always attempt even on error) */
     {
         esp_err_t end_ret = ld2410c_send_cmd(LD2410C_CMD_END_CONFIG, NULL, 0);
         if (end_ret != ESP_OK) {
@@ -353,6 +402,19 @@ esp_err_t ld2410c_read(ld2410c_data_t *out)
             buf[buf_pos - 3] == FRAME_FOOTER[1] &&
             buf[buf_pos - 2] == FRAME_FOOTER[2] &&
             buf[buf_pos - 1] == FRAME_FOOTER[3]) {
+
+            /* Log first frame's raw hex for debugging frame type */
+            static bool s_first_frame = true;
+            if (s_first_frame) {
+                char hex[LD2410C_FRAME_MAX_LEN * 3 + 1];
+                int pos = 0;
+                for (int i = 0; i < buf_pos && pos < (int)sizeof(hex) - 3; i++) {
+                    pos += snprintf(hex + pos, sizeof(hex) - pos, "%02X ", buf[i]);
+                }
+                ESP_LOGI(TAG, "First frame (%d bytes, type=0x%02X): %s",
+                         buf_pos, buf_pos > OFF_DATA_TYPE ? buf[OFF_DATA_TYPE] : 0, hex);
+                s_first_frame = false;
+            }
 
             esp_err_t ret = ld2410c_parse_frame(buf, buf_pos, out);
             if (ret == ESP_OK) {

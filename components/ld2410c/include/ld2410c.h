@@ -5,19 +5,31 @@
 #include "esp_err.h"
 #include "driver/uart.h"
 
+/** Number of distance gates (0-8) */
+#define LD2410C_MAX_GATES  9
+
+/** Distance per gate in cm */
+#define LD2410C_GATE_CM    75
+
 typedef struct {
     bool     moving_target;
     bool     stationary_target;
     uint8_t  move_energy;
     uint8_t  static_energy;
     uint16_t target_distance_cm;
+    /* Engineering mode per-gate data (only populated when engineering mode active) */
+    bool     engineering_mode;
+    uint8_t  move_gate_energy[LD2410C_MAX_GATES];
+    uint8_t  still_gate_energy[LD2410C_MAX_GATES];
+    uint8_t  max_move_gate;
+    uint8_t  max_still_gate;
 } ld2410c_data_t;
 
 /**
  * Initialise the LD2410C UART interface.
  * @param port  UART port number
- * @param tx_pin  GPIO for ESP TX → LD2410C RX
- * @param rx_pin  GPIO for ESP RX ← LD2410C TX
+ * @param tx_pin  GPIO for ESP TX -> LD2410C RX
+ * @param rx_pin  GPIO for ESP RX <- LD2410C TX
  */
 esp_err_t ld2410c_init(uart_port_t port, int tx_pin, int rx_pin);
 
@@ -34,9 +46,9 @@ esp_err_t ld2410c_read(ld2410c_data_t *out);
 void ld2410c_deinit(void);
 
 /**
- * Configure gate sensitivity and max detection range.
- * Must be called after ld2410c_init(). Enters config mode, sets parameters,
- * and returns to normal reporting mode.
+ * Configure gate sensitivity, max detection range, and engineering mode.
+ * Must be called after ld2410c_init(). All settings are applied in a single
+ * config session to avoid one command resetting another.
  * @param max_move_gate   Max moving detection gate (0-8, each gate = 75cm)
  * @param max_still_gate  Max stationary detection gate (0-8)
  * @param move_thresh     Per-gate moving sensitivity thresholds (array of max_move_gate+1)
@@ -44,24 +56,20 @@ void ld2410c_deinit(void);
  * @param still_thresh    Per-gate stationary sensitivity thresholds (array of max_still_gate+1)
  *                        Lower = more sensitive (0-100). NULL for defaults.
  * @param no_one_timeout  Seconds to wait before reporting "no target" (0 = immediate)
+ * @param engineering     true to enable engineering mode (per-gate energy in reports)
  */
 esp_err_t ld2410c_configure(uint8_t max_move_gate, uint8_t max_still_gate,
                             const uint8_t *move_thresh, const uint8_t *still_thresh,
-                            uint16_t no_one_timeout);
-
-/** Number of distance gates (0-8) */
-#define LD2410C_MAX_GATES  9
-
-/** Distance per gate in cm */
-#define LD2410C_GATE_CM    75
+                            uint16_t no_one_timeout, bool engineering);
 
 /* --- Internal frame parsing (exposed for unit testing) --- */
 
-/** Size of a standard (non-engineering) reporting frame */
-#define LD2410C_FRAME_MAX_LEN 64
+/** Max frame length (engineering mode frames are larger) */
+#define LD2410C_FRAME_MAX_LEN 128
 
 /**
  * Parse a complete reporting frame buffer into ld2410c_data_t.
+ * Handles both basic (data type 0x02) and engineering (data type 0x01) frames.
  * @param buf   Buffer containing a complete frame (header through footer)
  * @param len   Length of data in buffer
  * @param out   Parsed output
@@ -86,6 +94,8 @@ esp_err_t ld2410c_parse_frame(const uint8_t *buf, size_t len, ld2410c_data_t *ou
 #define LD2410C_CMD_END_CONFIG     0x00FE
 #define LD2410C_CMD_SET_MAX_GATE   0x0060
 #define LD2410C_CMD_SET_GATE_SENS  0x0064
+#define LD2410C_CMD_ENG_MODE_ON    0x0062
+#define LD2410C_CMD_ENG_MODE_OFF   0x0063
 
 /** Build a command frame into buf. Returns total frame length.
  *  @param buf       Output buffer (must be at least 4+2+2+payload_len+4 bytes)
