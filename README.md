@@ -1,4 +1,4 @@
-# Rufilla Presence Node
+# ElectronicsConsult Presence Node
 
 ESP32-C6 Zigbee end device combining an HLK-LD2410C 24 GHz mmWave radar and a VL53L0X time-of-flight ranging sensor. Reports presence and range data over Zigbee using the standard Analog Input cluster (`genAnalogInput` / `0x000C`) on two endpoints.
 
@@ -34,7 +34,7 @@ Power: mains via USB (no battery constraints currently).
 | Reporting | Automatic via ZBOSS stack on `set_attribute_val()` |
 | Report interval | 1 s polling, reports on change only |
 | Channel | 15 |
-| Manufacturer | `Rufilla` |
+| Manufacturer | `ElectronicsConsult` |
 | Model | `presence-node-v1` |
 
 ### How reporting works
@@ -62,7 +62,7 @@ python -m esptool --chip esp32c6 --no-stub -p /dev/ttyACM0 -b 115200 \
   --flash_mode dio --flash_size 2MB --flash_freq 80m \
   0x0 build/bootloader/bootloader.bin \
   0x8000 build/partition_table/partition-table.bin \
-  0x10000 build/rufilla-presence-node.bin
+  0x10000 build/presence-node.bin
 ```
 
 Or if `idf.py flash` works with your setup:
@@ -74,13 +74,13 @@ idf.py -p /dev/ttyACM0 flash monitor
 
 ### External Converter
 
-Copy `z2m/rufilla-presence-node.js` to your Z2M `data/external_converters/` directory. Z2M v2.9+ auto-loads converters from this directory — no `configuration.yaml` entry needed.
+Copy `z2m/presence-node.js` to your Z2M `data/external_converters/` directory. Z2M v2.9+ auto-loads converters from this directory — no `configuration.yaml` entry needed.
 
 For older Z2M versions, reference the converter in `configuration.yaml`:
 
 ```yaml
 external_converters:
-  - rufilla-presence-node.js
+  - presence-node.js
 ```
 
 Restart Z2M to load the converter.
@@ -89,7 +89,7 @@ Restart Z2M to load the converter.
 
 1. Enable permit join in Z2M (frontend or MQTT: `zigbee2mqtt/bridge/request/permit_join` with payload `{"value": true, "time": 254}`)
 2. Power the device (or erase ZB storage and reset for a fresh join)
-3. Device appears as `presence-node-v1` by Rufilla
+3. Device appears as `presence-node-v1` by ElectronicsConsult
 4. Once joined, MQTT messages publish to `zigbee2mqtt/<device_name>`
 
 ### MQTT Output
@@ -150,7 +150,7 @@ idf.py erase-flash
 │       ├── include/zigbee_node.h
 │       └── zigbee_node.c
 ├── z2m/
-│   └── rufilla-presence-node.js  # Z2M external converter (multi-endpoint)
+│   └── presence-node.js  # Z2M external converter (multi-endpoint)
 └── test/
     └── main/test_main.c
 ```

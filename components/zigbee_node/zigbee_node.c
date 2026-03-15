@@ -127,7 +127,7 @@ void zigbee_node_start(TaskFunction_t sensor_task_fn)
     /* Basic + Identify on endpoint 1 for device identification */
     esp_zb_basic_cluster_cfg_t basic_cfg = { .power_source = 0x01 };
     esp_zb_attribute_list_t *basic_attrs = esp_zb_basic_cluster_create(&basic_cfg);
-    static char manufacturer[] = {7, 'R', 'u', 'f', 'i', 'l', 'l', 'a'};
+    static char manufacturer[] = {18, 'E', 'l', 'e', 'c', 't', 'r', 'o', 'n', 'i', 'c', 's', 'C', 'o', 'n', 's', 'u', 'l', 't'};
     esp_zb_basic_cluster_add_attr(basic_attrs,
         ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, manufacturer);
     static char model[] = {16, 'p', 'r', 'e', 's', 'e', 'n', 'c', 'e', '-', 'n', 'o', 'd', 'e', '-', 'v', '1'};
