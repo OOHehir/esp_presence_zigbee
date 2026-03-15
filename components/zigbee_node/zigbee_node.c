@@ -8,8 +8,7 @@ static const char *TAG = "zigbee_node";
 
 #define EP_PRESENCE           1
 #define EP_RANGE              2
-#define EP_RANGE_STATUS       3
-#define EP_STATIC_ENERGY      4
+#define EP_STATIC_ENERGY      3
 #define ANALOG_IN_CLUSTER     0x000C
 #define ATTR_PRESENT_VALUE    0x0055
 
@@ -149,14 +148,7 @@ void zigbee_node_start(TaskFunction_t sensor_task_fn)
         esp_zb_analog_input_cluster_create(&ai_cfg),
         ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-    /* ── Endpoint 3: VL53L0X range status (0=valid, 255=no target) */
-    esp_zb_cluster_list_t *cl_status = esp_zb_zcl_cluster_list_create();
-    esp_zb_cluster_list_add_analog_input_cluster(
-        cl_status,
-        esp_zb_analog_input_cluster_create(&ai_cfg),
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-    /* ── Endpoint 4: LD2410C static energy (0–100) ─────────────── */
+    /* ── Endpoint 3: LD2410C static energy (0–100) ─────────────── */
     esp_zb_cluster_list_t *cl_static = esp_zb_zcl_cluster_list_create();
     esp_zb_cluster_list_add_analog_input_cluster(
         cl_static,
@@ -181,22 +173,15 @@ void zigbee_node_start(TaskFunction_t sensor_task_fn)
     esp_zb_ep_list_add_ep(ep_list, cl_range, ep2_cfg);
 
     esp_zb_endpoint_config_t ep3_cfg = {
-        .endpoint       = EP_RANGE_STATUS,
-        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        .app_device_id  = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID,
-    };
-    esp_zb_ep_list_add_ep(ep_list, cl_status, ep3_cfg);
-
-    esp_zb_endpoint_config_t ep4_cfg = {
         .endpoint       = EP_STATIC_ENERGY,
         .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
         .app_device_id  = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID,
     };
-    esp_zb_ep_list_add_ep(ep_list, cl_static, ep4_cfg);
+    esp_zb_ep_list_add_ep(ep_list, cl_static, ep3_cfg);
 
     esp_zb_device_register(ep_list);
-    ESP_LOGI(TAG, "Device registered (ep %d=presence, ep %d=range, ep %d=range_status, ep %d=static_energy)",
-             EP_PRESENCE, EP_RANGE, EP_RANGE_STATUS, EP_STATIC_ENERGY);
+    ESP_LOGI(TAG, "Device registered (ep %d=presence, ep %d=range, ep %d=static_energy)",
+             EP_PRESENCE, EP_RANGE, EP_STATIC_ENERGY);
 
     esp_zb_core_action_handler_register(zb_action_handler);
     esp_zb_set_primary_network_channel_set(1 << 15);
@@ -239,15 +224,11 @@ esp_err_t zigbee_node_update_vl53l0x(const vl53l0x_data_t *data)
     if (!s_network_joined) return ESP_OK;
 
     float range = (float)data->range_cm;
-    float status = (float)data->status;
 
     esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_zcl_set_attribute_val(EP_RANGE,
         ANALOG_IN_CLUSTER, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
         ATTR_PRESENT_VALUE, &range, false);
-    esp_zb_zcl_set_attribute_val(EP_RANGE_STATUS,
-        ANALOG_IN_CLUSTER, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ATTR_PRESENT_VALUE, &status, false);
     esp_zb_lock_release();
 
     return ESP_OK;

@@ -26,7 +26,6 @@ static void sensor_report_task(void *arg)
     bool prev_ld_presence = false;
     uint8_t prev_ld_static_energy = UINT8_MAX;
     uint16_t prev_vl_range = 0;
-    uint8_t prev_vl_status = UINT8_MAX;
 
     while (1) {
         ld2410c_data_t ld_data;
@@ -56,11 +55,9 @@ static void sensor_report_task(void *arg)
         }
 
         if (vl_err == ESP_OK) {
-            if (vl_data.range_cm != prev_vl_range || vl_data.status != prev_vl_status) {
-                ESP_LOGI(TAG, "VL53L0X: range=%ucm status=%u",
-                         vl_data.range_cm, vl_data.status);
+            if (vl_data.range_cm != prev_vl_range) {
+                ESP_LOGI(TAG, "VL53L0X: range=%ucm", vl_data.range_cm);
                 prev_vl_range = vl_data.range_cm;
-                prev_vl_status = vl_data.status;
                 zigbee_node_update_vl53l0x(&vl_data);
             }
         } else {

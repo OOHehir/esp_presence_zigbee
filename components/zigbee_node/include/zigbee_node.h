@@ -36,6 +36,6 @@ esp_err_t zigbee_node_update_vl53l0x(const vl53l0x_data_t *data);
 /**
  * Update LD2410C static energy on the Zigbee endpoint.
  * Thread-safe — acquires the Zigbee lock internally.
- * Updates Analog Input on endpoint 4 (static_energy as 0–100 float).
+ * Updates Analog Input on endpoint 3 (static_energy as 0–100 float).
  */
 esp_err_t zigbee_node_update_static_energy(uint8_t static_energy);
