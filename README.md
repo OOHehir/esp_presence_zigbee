@@ -32,14 +32,14 @@ Power: mains via USB (no battery constraints currently).
 | Endpoint 1 | Analog Input — LD2410C presence (`1.0` = present, `0.0` = absent) |
 | Endpoint 2 | Analog Input — VL53L0X range (cm as float, `200` = out of range) |
 | Reporting | Automatic via ZBOSS stack on `set_attribute_val()` |
-| Report interval | ~5 s (sensor polling rate) |
+| Report interval | 1 s polling, reports on change only |
 | Channel | 15 |
 | Manufacturer | `Rufilla` |
 | Model | `presence-node-v1` |
 
 ### How reporting works
 
-The firmware calls `esp_zb_zcl_set_attribute_val()` every 5 seconds on each endpoint. The ZBOSS stack automatically sends unsolicited attribute reports to the coordinator — no explicit `report_attr_cmd_req()` or binding table entries are needed. This matches the pattern used by the [sound level monitor](https://github.com/OOHehir/esp_sound_lvl_zigbee).
+The firmware polls sensors every 1 second and calls `esp_zb_zcl_set_attribute_val()` only when values change. The ZBOSS stack automatically sends unsolicited attribute reports to the coordinator — no explicit `report_attr_cmd_req()` or binding table entries are needed. This matches the pattern used by the [sound level monitor](https://github.com/OOHehir/esp_sound_lvl_zigbee).
 
 ### Endpoint design notes
 

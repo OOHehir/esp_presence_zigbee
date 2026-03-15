@@ -19,10 +19,14 @@ static const char *TAG = "main";
 #define VL53L0X_XSHUT_PIN GPIO_NUM_8
 
 /* Sensor polling interval */
-#define SENSOR_REPORT_INTERVAL_MS 5000
+#define SENSOR_REPORT_INTERVAL_MS 1000
 
 static void sensor_report_task(void *arg)
 {
+    bool prev_ld_presence = false;
+    uint16_t prev_vl_range = 0;
+    uint8_t prev_vl_status = UINT8_MAX;
+
     while (1) {
         ld2410c_data_t ld_data;
         vl53l0x_data_t vl_data;
@@ -31,38 +35,28 @@ static void sensor_report_task(void *arg)
         esp_err_t vl_err = vl53l0x_read(&vl_data);
 
         if (ld_err == ESP_OK) {
-            ESP_LOGI(TAG, "LD2410C: move=%d still=%d move_e=%u still_e=%u dist=%ucm",
-                     ld_data.moving_target, ld_data.stationary_target,
-                     ld_data.move_energy, ld_data.static_energy,
-                     ld_data.target_distance_cm);
-
-            /* Log per-gate energy values when engineering mode is active */
-            if (ld_data.engineering_mode) {
-                char move_buf[64], still_buf[64];
-                int m_pos = 0, s_pos = 0;
-                uint8_t max_g = ld_data.max_move_gate > ld_data.max_still_gate
-                              ? ld_data.max_move_gate : ld_data.max_still_gate;
-                if (max_g >= LD2410C_MAX_GATES) max_g = LD2410C_MAX_GATES - 1;
-
-                for (uint8_t g = 0; g <= max_g; g++) {
-                    m_pos += snprintf(move_buf + m_pos, sizeof(move_buf) - m_pos,
-                                      "%u ", ld_data.move_gate_energy[g]);
-                    s_pos += snprintf(still_buf + s_pos, sizeof(still_buf) - s_pos,
-                                      "%u ", ld_data.still_gate_energy[g]);
-                }
-                ESP_LOGI(TAG, "  ENG move[0-%u]: %s", max_g, move_buf);
-                ESP_LOGI(TAG, "  ENG still[0-%u]: %s", max_g, still_buf);
+            bool presence = ld_data.moving_target || ld_data.stationary_target;
+            if (presence != prev_ld_presence) {
+                ESP_LOGI(TAG, "LD2410C: %s (move=%d still=%d e=%u/%u dist=%ucm)",
+                         presence ? "PRESENT" : "CLEAR",
+                         ld_data.moving_target, ld_data.stationary_target,
+                         ld_data.move_energy, ld_data.static_energy,
+                         ld_data.target_distance_cm);
+                prev_ld_presence = presence;
+                zigbee_node_update_ld2410c(&ld_data);
             }
-
-            zigbee_node_update_ld2410c(&ld_data);
         } else {
             ESP_LOGW(TAG, "LD2410C read failed: %s", esp_err_to_name(ld_err));
         }
 
         if (vl_err == ESP_OK) {
-            ESP_LOGI(TAG, "VL53L0X: range=%ucm status=%u",
-                     vl_data.range_cm, vl_data.status);
-            zigbee_node_update_vl53l0x(&vl_data);
+            if (vl_data.range_cm != prev_vl_range || vl_data.status != prev_vl_status) {
+                ESP_LOGI(TAG, "VL53L0X: range=%ucm status=%u",
+                         vl_data.range_cm, vl_data.status);
+                prev_vl_range = vl_data.range_cm;
+                prev_vl_status = vl_data.status;
+                zigbee_node_update_vl53l0x(&vl_data);
+            }
         } else {
             ESP_LOGW(TAG, "VL53L0X read failed: %s", esp_err_to_name(vl_err));
         }
@@ -96,11 +90,11 @@ void app_main(void)
      * Gate 2: sensitive move (30), high still (60) — ceiling is constant reflector
      * Gate 3: low sensitivity (80) — only strong multipath bounces
      * no_one_timeout=10s — debounce periodic false positives
-     * Engineering mode ON — logs per-gate energy for in-situ tuning.
+     * Engineering mode OFF — OUT pin only works in basic mode.
      * All settings applied in a single config session. */
     static const uint8_t move_sens[]  = {100, 40, 30, 80};
     static const uint8_t still_sens[] = {100, 40, 60, 80};
-    ret = ld2410c_configure(3, 3, move_sens, still_sens, 10, true);
+    ret = ld2410c_configure(3, 3, move_sens, still_sens, 10, false);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "LD2410C configure failed: %s — using defaults", esp_err_to_name(ret));
     }

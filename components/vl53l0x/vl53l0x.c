@@ -43,6 +43,11 @@ static const char *TAG = "vl53l0x";
 
 static i2c_master_bus_handle_t s_bus_handle = NULL;
 static i2c_master_dev_handle_t s_dev_handle = NULL;
+static gpio_num_t s_xshut_pin = GPIO_NUM_NC;
+static uint32_t s_timeout_count = 0;
+static uint32_t s_reinit_count = 0;
+#define TIMEOUT_REINIT_THRESHOLD  5   /* re-init after this many consecutive timeouts */
+#define REINIT_MAX_ATTEMPTS       3   /* stop re-init attempts after this many failures */
 
 /* --- Low-level I2C helpers --- */
 
@@ -233,6 +238,7 @@ esp_err_t vl53l0x_init(i2c_port_t port, int sda_pin, int scl_pin, gpio_num_t xsh
         return ret;
     }
 
+    s_xshut_pin = xshut_pin;
     ESP_LOGI(TAG, "Initialised on I2C%d (SDA=%d, SCL=%d)", port, sda_pin, scl_pin);
     return ESP_OK;
 }
@@ -259,11 +265,34 @@ esp_err_t vl53l0x_read(vl53l0x_data_t *out)
     } while (!(status & 0x07) && --timeout > 0);
 
     if (timeout == 0) {
-        ESP_LOGW(TAG, "Measurement timed out (interrupt status=0x%02X)", status);
+        s_timeout_count++;
+        if (s_timeout_count == 1) {
+            ESP_LOGW(TAG, "Measurement timed out (status=0x%02X)", status);
+        }
+        /* Re-init sensor after consecutive timeouts, up to max attempts */
+        if (s_timeout_count >= TIMEOUT_REINIT_THRESHOLD &&
+            s_reinit_count < REINIT_MAX_ATTEMPTS) {
+            s_reinit_count++;
+            ESP_LOGW(TAG, "Re-initialising sensor (attempt %lu/%d)",
+                     (unsigned long)s_reinit_count, REINIT_MAX_ATTEMPTS);
+            if (s_xshut_pin != GPIO_NUM_NC) {
+                gpio_set_level(s_xshut_pin, 0);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                gpio_set_level(s_xshut_pin, 1);
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            vl53l0x_sensor_init();
+            s_timeout_count = 0;
+        } else if (s_timeout_count == TIMEOUT_REINIT_THRESHOLD) {
+            ESP_LOGE(TAG, "Sensor offline after %d re-init attempts", REINIT_MAX_ATTEMPTS);
+        }
         out->range_cm = VL53L0X_OUT_OF_RANGE_CM;
         out->status = 255;
-        return ESP_OK; /* Return sentinel rather than error */
+        return ESP_OK;
     }
+
+    s_timeout_count = 0;
+    s_reinit_count = 0;
 
     /* Read result (12 bytes from 0x14) */
     uint8_t result[12];
