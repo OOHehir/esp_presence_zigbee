@@ -24,6 +24,7 @@ static const char *TAG = "main";
 static void sensor_report_task(void *arg)
 {
     bool prev_ld_presence = false;
+    uint8_t prev_ld_static_energy = UINT8_MAX;
     uint16_t prev_vl_range = 0;
     uint8_t prev_vl_status = UINT8_MAX;
 
@@ -44,6 +45,11 @@ static void sensor_report_task(void *arg)
                          ld_data.target_distance_cm);
                 prev_ld_presence = presence;
                 zigbee_node_update_ld2410c(&ld_data);
+            }
+            if (ld_data.static_energy != prev_ld_static_energy) {
+                ESP_LOGI(TAG, "LD2410C: static_energy=%u", ld_data.static_energy);
+                prev_ld_static_energy = ld_data.static_energy;
+                zigbee_node_update_static_energy(ld_data.static_energy);
             }
         } else {
             ESP_LOGW(TAG, "LD2410C read failed: %s", esp_err_to_name(ld_err));
