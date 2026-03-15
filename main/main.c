@@ -2,6 +2,8 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "nvs_flash.h"
+#include "esp_partition.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2c_master.h"
@@ -17,6 +19,7 @@ static const char *TAG = "main";
 #define VL53L0X_SDA_PIN   GPIO_NUM_6
 #define VL53L0X_SCL_PIN   GPIO_NUM_7
 #define VL53L0X_XSHUT_PIN GPIO_NUM_8
+#define ZB_RESET_GPIO      GPIO_NUM_22  /* Pull-down; HIGH on boot = factory reset */
 
 /* Sensor polling interval */
 #define SENSOR_REPORT_INTERVAL_MS 1000
@@ -68,11 +71,39 @@ static void sensor_report_task(void *arg)
     }
 }
 
+/* ── Zigbee factory reset check ──────────────────────────────── */
+static bool check_zigbee_reset(void)
+{
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << ZB_RESET_GPIO,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+    };
+    gpio_config(&cfg);
+    vTaskDelay(pdMS_TO_TICKS(50));  /* let level settle */
+
+    if (gpio_get_level(ZB_RESET_GPIO) == 1) {
+        ESP_LOGW(TAG, "GPIO %d HIGH — erasing Zigbee storage + NVS for factory reset", ZB_RESET_GPIO);
+        const esp_partition_t *zb_part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+            ESP_PARTITION_SUBTYPE_ANY, "zb_storage");
+        if (zb_part) {
+            esp_partition_erase_range(zb_part, 0, zb_part->size);
+        }
+        nvs_flash_erase();
+        return true;
+    }
+    return false;
+}
+
 void app_main(void)
 {
-    /* 1. Initialise NVS — required by Zigbee stack */
+    /* 1. Check for factory reset (GPIO 22 HIGH = reset) */
+    bool factory_reset = check_zigbee_reset();
+
+    /* 2. Initialise NVS — required by Zigbee stack */
     esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    if (factory_reset || ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
