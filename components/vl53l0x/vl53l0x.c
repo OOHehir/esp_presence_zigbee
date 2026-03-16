@@ -47,7 +47,8 @@ static gpio_num_t s_xshut_pin = GPIO_NUM_NC;
 static uint32_t s_timeout_count = 0;
 static uint32_t s_reinit_count = 0;
 #define TIMEOUT_REINIT_THRESHOLD  5   /* re-init after this many consecutive timeouts */
-#define REINIT_MAX_ATTEMPTS       3   /* stop re-init attempts after this many failures */
+#define REINIT_MAX_ATTEMPTS       3   /* back off after this many consecutive failures */
+#define REINIT_COOLDOWN_CYCLES   30   /* after max attempts, wait this many cycles before retrying */
 
 /* --- Low-level I2C helpers --- */
 
@@ -266,25 +267,38 @@ esp_err_t vl53l0x_read(vl53l0x_data_t *out)
 
     if (timeout == 0) {
         s_timeout_count++;
-        if (s_timeout_count == 1) {
-            ESP_LOGW(TAG, "Measurement timed out (status=0x%02X)", status);
+        if (s_timeout_count == 1 || (s_timeout_count % TIMEOUT_REINIT_THRESHOLD) == 0) {
+            ESP_LOGW(TAG, "Measurement timed out (status=0x%02X, count=%lu)",
+                     status, (unsigned long)s_timeout_count);
         }
-        /* Re-init sensor after consecutive timeouts, up to max attempts */
-        if (s_timeout_count >= TIMEOUT_REINIT_THRESHOLD &&
-            s_reinit_count < REINIT_MAX_ATTEMPTS) {
-            s_reinit_count++;
-            ESP_LOGW(TAG, "Re-initialising sensor (attempt %lu/%d)",
-                     (unsigned long)s_reinit_count, REINIT_MAX_ATTEMPTS);
-            if (s_xshut_pin != GPIO_NUM_NC) {
-                gpio_set_level(s_xshut_pin, 0);
-                vTaskDelay(pdMS_TO_TICKS(50));
-                gpio_set_level(s_xshut_pin, 1);
-                vTaskDelay(pdMS_TO_TICKS(10));
+        /* Re-init sensor after consecutive timeouts; back off then retry */
+        if (s_timeout_count >= TIMEOUT_REINIT_THRESHOLD) {
+            bool should_reinit;
+            if (s_reinit_count < REINIT_MAX_ATTEMPTS) {
+                should_reinit = true;
+            } else {
+                /* After max rapid attempts, retry every COOLDOWN_CYCLES timeouts */
+                should_reinit = (s_timeout_count % (TIMEOUT_REINIT_THRESHOLD * REINIT_COOLDOWN_CYCLES)) == 0;
             }
-            vl53l0x_sensor_init();
-            s_timeout_count = 0;
-        } else if (s_timeout_count == TIMEOUT_REINIT_THRESHOLD) {
-            ESP_LOGE(TAG, "Sensor offline after %d re-init attempts", REINIT_MAX_ATTEMPTS);
+            if (should_reinit) {
+                s_reinit_count++;
+                ESP_LOGW(TAG, "Re-initialising sensor (attempt %lu)",
+                         (unsigned long)s_reinit_count);
+                if (s_xshut_pin != GPIO_NUM_NC) {
+                    gpio_set_level(s_xshut_pin, 0);
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                    gpio_set_level(s_xshut_pin, 1);
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+                esp_err_t rinit = vl53l0x_sensor_init();
+                if (rinit == ESP_OK) {
+                    /* Discard first reading after re-init (often bogus) */
+                    vl53l0x_write_reg(REG_SYSRANGE_START, 0x01);
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                    vl53l0x_write_reg(REG_SYSTEM_INTERRUPT_CLEAR, 0x01);
+                }
+                s_timeout_count = 0;
+            }
         }
         out->range_cm = VL53L0X_OUT_OF_RANGE_CM;
         out->status = 255;

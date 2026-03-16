@@ -128,12 +128,27 @@ idf.py erase-flash
 | zb_storage | 0x190000 | 64 KB | Zigbee network state |
 | zb_fct | 0x1A0000 | 4 KB | Zigbee factory data |
 
+## Pre-built Firmware
+
+The `firmware/` directory contains the latest application binary for convenience:
+
+```bash
+python -m esptool --chip esp32c6 --no-stub -p /dev/ttyACM0 -b 115200 \
+  --before default_reset --after hard_reset write_flash \
+  --flash_mode dio --flash_size 2MB --flash_freq 80m \
+  0x10000 firmware/presence-node.bin
+```
+
+Note: bootloader and partition table must already be flashed (see full flash command above).
+
 ## Project Structure
 
 ```
 ├── CMakeLists.txt
 ├── sdkconfig.defaults          # ZB_ZED, native radio
 ├── partitions.csv
+├── firmware/
+│   └── presence-node.bin       # Pre-built application binary
 ├── main/
 │   ├── main.c                  # Init sensors, start Zigbee main loop
 │   └── idf_component.yml       # esp-zigbee-lib + esp-zboss-lib
