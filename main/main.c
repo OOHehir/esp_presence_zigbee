@@ -64,10 +64,12 @@ static void vl53l0x_task(void *arg)
 {
     uint16_t prev_range = 0;
     uint8_t prev_status = 0;
+    uint32_t read_count = 0;
 
     while (1) {
         vl53l0x_data_t data;
         esp_err_t err = vl53l0x_read(&data);
+        read_count++;
 
         if (err == ESP_OK) {
             if (data.range_cm != prev_range || data.status != prev_status) {
@@ -75,6 +77,9 @@ static void vl53l0x_task(void *arg)
                 prev_range = data.range_cm;
                 prev_status = data.status;
                 zigbee_node_update_vl53l0x(&data);
+            } else if ((read_count % 30) == 0) {
+                ESP_LOGI(TAG, "VL53L0X: alive range=%ucm status=%u (reads=%lu)",
+                         data.range_cm, data.status, (unsigned long)read_count);
             }
         } else {
             ESP_LOGW(TAG, "VL53L0X read failed: %s", esp_err_to_name(err));
