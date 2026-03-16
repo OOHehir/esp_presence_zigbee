@@ -21,56 +21,74 @@ static const char *TAG = "main";
 #define VL53L0X_XSHUT_PIN GPIO_NUM_8
 #define ZB_RESET_GPIO      GPIO_NUM_22  /* Pull-down; HIGH on boot = factory reset */
 
-/* Sensor polling interval */
-#define SENSOR_REPORT_INTERVAL_MS 1000
+/* Sensor polling intervals */
+#define LD_POLL_INTERVAL_MS  1000
+#define VL_POLL_INTERVAL_MS  2000
 
-static void sensor_report_task(void *arg)
+/* ── LD2410C task (UART — lightweight, must not be blocked) ── */
+static void ld2410c_task(void *arg)
 {
-    bool prev_ld_presence = false;
-    uint8_t prev_ld_static_energy = UINT8_MAX;
-    uint16_t prev_vl_range = 0;
-    uint8_t prev_vl_status = 0;
+    bool prev_presence = false;
+    uint8_t prev_static_energy = UINT8_MAX;
 
     while (1) {
-        ld2410c_data_t ld_data;
-        vl53l0x_data_t vl_data;
+        ld2410c_data_t data;
+        esp_err_t err = ld2410c_read(&data);
 
-        esp_err_t ld_err = ld2410c_read(&ld_data);
-        esp_err_t vl_err = vl53l0x_read(&vl_data);
-
-        if (ld_err == ESP_OK) {
-            bool presence = ld_data.moving_target || ld_data.stationary_target;
-            if (presence != prev_ld_presence) {
+        if (err == ESP_OK) {
+            bool presence = data.moving_target || data.stationary_target;
+            if (presence != prev_presence) {
                 ESP_LOGI(TAG, "LD2410C: %s (move=%d still=%d e=%u/%u dist=%ucm)",
                          presence ? "PRESENT" : "CLEAR",
-                         ld_data.moving_target, ld_data.stationary_target,
-                         ld_data.move_energy, ld_data.static_energy,
-                         ld_data.target_distance_cm);
-                prev_ld_presence = presence;
-                zigbee_node_update_ld2410c(&ld_data);
+                         data.moving_target, data.stationary_target,
+                         data.move_energy, data.static_energy,
+                         data.target_distance_cm);
+                prev_presence = presence;
+                zigbee_node_update_ld2410c(&data);
             }
-            if (ld_data.static_energy != prev_ld_static_energy) {
-                ESP_LOGI(TAG, "LD2410C: static_energy=%u", ld_data.static_energy);
-                prev_ld_static_energy = ld_data.static_energy;
-                zigbee_node_update_static_energy(ld_data.static_energy);
-            }
-        } else {
-            ESP_LOGW(TAG, "LD2410C read failed: %s", esp_err_to_name(ld_err));
-        }
-
-        if (vl_err == ESP_OK) {
-            if (vl_data.range_cm != prev_vl_range || vl_data.status != prev_vl_status) {
-                ESP_LOGI(TAG, "VL53L0X: range=%ucm status=%u", vl_data.range_cm, vl_data.status);
-                prev_vl_range = vl_data.range_cm;
-                prev_vl_status = vl_data.status;
-                zigbee_node_update_vl53l0x(&vl_data);
+            if (data.static_energy != prev_static_energy) {
+                ESP_LOGI(TAG, "LD2410C: static_energy=%u", data.static_energy);
+                prev_static_energy = data.static_energy;
+                zigbee_node_update_static_energy(data.static_energy);
             }
         } else {
-            ESP_LOGW(TAG, "VL53L0X read failed: %s", esp_err_to_name(vl_err));
+            ESP_LOGW(TAG, "LD2410C read failed: %s", esp_err_to_name(err));
         }
 
-        vTaskDelay(pdMS_TO_TICKS(SENSOR_REPORT_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(LD_POLL_INTERVAL_MS));
     }
+}
+
+/* ── VL53L0X task (I2C — can block up to 1s on measurement) ── */
+static void vl53l0x_task(void *arg)
+{
+    uint16_t prev_range = 0;
+    uint8_t prev_status = 0;
+
+    while (1) {
+        vl53l0x_data_t data;
+        esp_err_t err = vl53l0x_read(&data);
+
+        if (err == ESP_OK) {
+            if (data.range_cm != prev_range || data.status != prev_status) {
+                ESP_LOGI(TAG, "VL53L0X: range=%ucm status=%u", data.range_cm, data.status);
+                prev_range = data.range_cm;
+                prev_status = data.status;
+                zigbee_node_update_vl53l0x(&data);
+            }
+        } else {
+            ESP_LOGW(TAG, "VL53L0X read failed: %s", esp_err_to_name(err));
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(VL_POLL_INTERVAL_MS));
+    }
+}
+
+/* ── Entry point launched by Zigbee signal handler ── */
+static void sensor_report_task(void *arg)
+{
+    xTaskCreate(vl53l0x_task, "vl53l0x", 3072, NULL, 4, NULL);
+    ld2410c_task(arg);  /* run LD2410C in this task */
 }
 
 /* ── Zigbee factory reset check ──────────────────────────────── */

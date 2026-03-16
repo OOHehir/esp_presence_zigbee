@@ -42,7 +42,7 @@ static const uint8_t FRAME_FOOTER[] = {0xF8, 0xF7, 0xF6, 0xF5};
 
 /* UART config */
 #define LD2410C_BAUD     256000
-#define UART_BUF_SIZE    256
+#define UART_BUF_SIZE    1024
 #define READ_TIMEOUT_MS  1000
 
 static uart_port_t s_port = -1;
@@ -360,14 +360,25 @@ esp_err_t ld2410c_read(ld2410c_data_t *out)
     uint8_t buf[LD2410C_FRAME_MAX_LEN];
     int buf_pos = 0;
     int header_matched = 0;
+    bool have_result = false;
     TickType_t start = xTaskGetTickCount();
     TickType_t timeout_ticks = pdMS_TO_TICKS(READ_TIMEOUT_MS);
 
+    /* Drain all complete frames from the buffer, keep the last (freshest).
+     * First read uses a blocking timeout in case the buffer is empty;
+     * subsequent reads use zero timeout to drain without blocking. */
+    TickType_t read_wait = pdMS_TO_TICKS(100);
+
     while ((xTaskGetTickCount() - start) < timeout_ticks) {
         uint8_t byte;
-        int read = uart_read_bytes(s_port, &byte, 1,
-                                   pdMS_TO_TICKS(100));
-        if (read <= 0) continue;
+        int rd = uart_read_bytes(s_port, &byte, 1, read_wait);
+        if (rd <= 0) {
+            if (have_result) break;    /* buffer drained, return latest */
+            continue;                  /* keep waiting for first frame */
+        }
+
+        /* After first byte arrives, switch to non-blocking drain */
+        read_wait = 0;
 
         /* Look for header */
         if (header_matched < HEADER_LEN) {
@@ -418,17 +429,19 @@ esp_err_t ld2410c_read(ld2410c_data_t *out)
 
             esp_err_t ret = ld2410c_parse_frame(buf, buf_pos, out);
             if (ret == ESP_OK) {
-                return ESP_OK;
+                have_result = true;
+                /* Don't return yet — keep draining to get the freshest frame */
+            } else {
+                s_malformed_count++;
+                ESP_LOGD(TAG, "Bad frame (malformed: %lu)", (unsigned long)s_malformed_count);
             }
 
-            s_malformed_count++;
-            ESP_LOGD(TAG, "Bad frame (malformed: %lu)", (unsigned long)s_malformed_count);
             header_matched = 0;
             buf_pos = 0;
         }
     }
 
-    return ESP_ERR_TIMEOUT;
+    return have_result ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
 void ld2410c_deinit(void)
